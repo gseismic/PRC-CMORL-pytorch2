@@ -117,21 +117,18 @@ class DDPG:
             next_state_action_values = self.critic_target(next_state_batch, next_action_actor_batch, preference_batch)
             expected_state_action_batch = reward_batch + (self.gamma * mask_batch * next_state_action_values)
 
-        # raise
         self.critic_optim.zero_grad()
         state_action_batch = self.critic(state_batch, action_batch, preference_batch)
         w_state_action_value_batch = torch.bmm(state_action_batch.unsqueeze(1), preference_batch.unsqueeze(2)).squeeze(1)
         w_expected_state_action_value_batch = torch.bmm(expected_state_action_batch.unsqueeze(1),
                                                         preference_batch.unsqueeze(2)).squeeze(1)
 
-        # raise
         value_loss1 = F.mse_loss(w_state_action_value_batch.view(-1), w_expected_state_action_value_batch.view(-1))
         value_loss2 = F.mse_loss(state_action_batch.view(-1), expected_state_action_batch.view(-1))
 
         value_loss = self.beta * value_loss1 + (1 - self.beta) * value_loss2
         value_loss.backward()
         self.critic_optim.step()
-        # raise
         # ACTOR LOSS
         self.actor_optim.zero_grad()
         action = self.actor(state_batch, preference_batch)
@@ -163,7 +160,6 @@ class DDPG:
         total_policy_loss = policy_loss.mean() + policy_loss_b.mean()
         total_policy_loss.backward() #retain_graph=True)
         self.actor_optim.step()
-        # raise
 
         # DUAL LOSS
         self.dual_optim.zero_grad()
@@ -173,7 +169,6 @@ class DDPG:
         dual_loss_actor = (self.dual.exp() * err1).mean() + (self.dual.exp() * err2).mean()
         dual_loss_actor.backward()
         self.dual_optim.step()
-        # raise
 
         return pareto_f.detach().cpu().numpy()
 
@@ -201,11 +196,9 @@ class DDPG:
         mask_batch = Tensor(torch.stack(batch.mask)).to(self.device).unsqueeze(1)
         next_state_batch = normalize(Tensor(torch.stack(batch.next_state)).to(self.device), self.obs_rms, self.device)
 
-        # raise
         if self.normalize_returns:
             reward_batch = torch.clamp(reward_batch, -self.cliprew, self.cliprew)
 
-        # raise
         pareto_f = self.update_model(state_batch, 
                                     action_batch, 
                                     reward_batch, 
@@ -214,7 +207,6 @@ class DDPG:
                                     next_state_batch, 
                                     preference_bayes)
 
-        # raise
         self.soft_update()
 
         return pareto_f

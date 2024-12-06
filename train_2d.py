@@ -171,9 +171,7 @@ class Train:
                         ddpg_dist = ddpg_distance_metric(perturbed_actions.detach().cpu().numpy(), unperturbed_actions.detach().cpu().numpy())
                         param_noise.adapt(ddpg_dist)
 
-                    # raise
                     _ = self.model_v.update_parameters(w_bayes=preference_wb, batch_size=args.batch_size)
-                    # raise
                     self.train_steps += 1
 
         obj_np = np.array(obj_list)
