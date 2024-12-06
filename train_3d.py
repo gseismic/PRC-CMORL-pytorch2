@@ -13,6 +13,8 @@ from param_noise import AdaptiveParamNoiseSpec, ddpg_distance_metric
 from index_3d import compute_index
 from utils import save_model
 
+torch.autograd.set_detect_anomaly(True)
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--env_name', default="MO-Walker2d-v3", help='name of the environment to run')
 parser.add_argument('--gamma', type=float, default=0.99, metavar='G', help='discount factor for reward (default: 0.99)')
@@ -76,9 +78,12 @@ class Train:
         print("Env_Name------>", args.env_name)
         print("Obj_Dimension------>", env.obj_dim)
         print("Obs_Dimension------>", env.observation_space.shape[0])
+        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
 
         self.model_v = cmo_ddpg.DDPG(gamma=args.gamma, tau=args.tau, hidden_size=args.hidden_size, num_inputs=env.observation_space.shape[0],
-                 action_space=env.action_space, reward_space=args.objective_num, train_mode=True, replay_size=args.replay_size, beta=args.beta)
+                 action_space=env.action_space, reward_space=args.objective_num, train_mode=True, replay_size=args.replay_size, beta=args.beta, device=self.device)
 
         if args.mode == "train":
             self.model_v.train()
@@ -92,26 +97,26 @@ class Train:
     def black_box_function(self, w1, w2, w3):
         s = env.reset()
         reset_noise(self.model_v, ounoise, param_noise)
-        preference_wb = torch.tensor([w1, w2, w3])/(w1 + w2 + w3)
+        preference_wb = torch.tensor([w1, w2, w3], device=self.device)/(w1 + w2 + w3)
         obj_list = []
 
         for t in range(args.num_epochs_cycles):
             with torch.no_grad():
                 for t_rollout in range(args.num_rollout_steps):
                     if args.user_preference is not None:
-                        preference = torch.tensor(args.user_preference)
-                        preference = self.model_v.Tensor(preference).unsqueeze(0)
+                        preference = torch.tensor(args.user_preference, device=self.device)
+                        preference = preference.unsqueeze(0)
                     else:  # random pick a preference if it is not specified
                         if t_rollout >= int(args.num_rollout_steps/2):
                             preference = preference_wb
-                            preference = self.model_v.Tensor(preference).unsqueeze(0)
+                            preference = preference.unsqueeze(0)
                         else:
                             if t_rollout % 10 == 0:
                                 p1 = rn.uniform(0, 1)
                                 p2 = rn.uniform(0, 1)
                                 p3 = rn.uniform(0, 1)
-                                preference = torch.tensor([p1, p2, p3])/(p1 + p2 + p3)
-                                preference = self.model_v.Tensor(preference).unsqueeze(0)
+                                preference = torch.tensor([p1, p2, p3], device=self.device)/(p1 + p2 + p3)
+                                preference = preference.unsqueeze(0)
                                 obj = np.zeros(args.objective_num)
 
                     state = self.model_v.Tensor([s])

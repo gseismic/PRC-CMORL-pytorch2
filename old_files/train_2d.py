@@ -78,22 +78,8 @@ class Train:
         print("Obj_Dimension------>", env.obj_dim)
         print("Obs_Dimension------>", env.observation_space.shape[0])
 
-        # 添加异常检测
-        torch.autograd.set_detect_anomaly(True)
-        
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {self.device}")
-        
-        self.model_v = cmo_ddpg.DDPG(gamma=args.gamma, 
-                                    tau=args.tau, 
-                                    hidden_size=args.hidden_size,
-                                    num_inputs=env.observation_space.shape[0],
-                                    action_space=env.action_space, 
-                                    reward_space=args.objective_num,
-                                    train_mode=True,
-                                    replay_size=args.replay_size,
-                                    beta=args.beta,
-                                    device=self.device)
+        self.model_v = cmo_ddpg.DDPG(gamma=args.gamma, tau=args.tau, hidden_size=args.hidden_size, num_inputs=env.observation_space.shape[0],
+                 action_space=env.action_space, reward_space=args.objective_num, train_mode=True, replay_size=args.replay_size, beta=args.beta)
 
         if args.mode == "train":
             self.model_v.train()
@@ -108,7 +94,7 @@ class Train:
     def black_box_function(self, w):
         s = env.reset()
         reset_noise(self.model_v, ounoise, param_noise)
-        preference_wb = torch.tensor([w, 1-w], device=self.device, dtype=torch.float32)
+        preference_wb = torch.tensor([w, 1-w])
         obj_list = []
 
         for t in range(args.num_epochs_cycles):
@@ -116,27 +102,20 @@ class Train:
                 for t_rollout in range(args.num_rollout_steps):
                     if args.user_preference is not None:
                         angle = args.user_preference * math.pi/180
-                        preference = torch.tensor([math.tan(angle) / (1 + math.tan(angle)), 
-                                                 1 / (1 + math.tan(angle))], 
-                                                device=self.device,
-                                                dtype=torch.float32)
-                        preference = preference.unsqueeze(0)
+                        preference = torch.tensor([math.tan(angle) / (1 + math.tan(angle)), 1 / (1 + math.tan(angle))])
+                        preference = self.model_v.Tensor(preference).unsqueeze(0)
                     else:  # random pick a preference if it is not specified
                         if t_rollout >= int(args.num_rollout_steps/2):
                             preference = preference_wb
-                            preference = preference.unsqueeze(0)
+                            preference = self.model_v.Tensor(preference).unsqueeze(0)
                         else:
                             if t_rollout % 10 == 0:
-                                angle = rn.uniform(t_rollout/10 * math.pi / 18, 
-                                                 (t_rollout/10 + 1) * math.pi / 18)
-                                preference = torch.tensor([math.tan(angle) / (1 + math.tan(angle)),
-                                                         1 / (1 + math.tan(angle))],
-                                                        device=self.device,
-                                                        dtype=torch.float32)
-                                preference = preference.unsqueeze(0)
+                                angle = rn.uniform(t_rollout/10 * math.pi / 18, (t_rollout/10 + 1) * math.pi / 18)
+                                preference = torch.tensor([math.tan(angle) / (1 + math.tan(angle)), 1 / (1 + math.tan(angle))])
+                                preference = self.model_v.Tensor(preference).unsqueeze(0)
                                 obj = np.zeros(args.objective_num)
 
-                    state = torch.tensor(np.array([s]), device=self.device, dtype=torch.float32)
+                    state = self.model_v.Tensor([s])
                     action = self.model_v.select_action(state, preference, ounoise, param_noise)
                     next_state_, _, done, reward_ = env.step(action.cpu().numpy()[0])
 
@@ -147,13 +126,11 @@ class Train:
                     if t_rollout < int(args.num_rollout_steps/2) and (t_rollout+1) % 10 == 0 and t+1 == args.num_epochs_cycles:
                         obj_list.append(obj.tolist())
 
-                    mask = torch.tensor([not done], device=self.device, dtype=torch.float32)
-                    next_state = torch.tensor(np.array([next_state_]), device=self.device, dtype=torch.float32)
-                    reward_np = np.array([reward_['obj']])
-                    reward = torch.from_numpy(reward_np).to(device=self.device, dtype=torch.float32)
+                    mask = self.model_v.Tensor([not done])
+                    next_state = self.model_v.Tensor([next_state_])
+                    reward = self.model_v.Tensor([reward_['obj']])
 
-                    with torch.no_grad():
-                        self.model_v.store_transition(state, preference, action, mask, next_state, reward)
+                    self.model_v.store_transition(state, preference, action, mask, next_state, reward)
 
                     s = next_state_
                     if done:
@@ -168,12 +145,10 @@ class Train:
                         preferences = torch.stack([transition[1] for transition in episode_transitions], dim=0)
                         unperturbed_actions = self.model_v.select_action(states, preferences, None, None)
                         perturbed_actions = torch.stack([transition[2] for transition in episode_transitions], 0)
-                        ddpg_dist = ddpg_distance_metric(perturbed_actions.detach().cpu().numpy(), unperturbed_actions.detach().cpu().numpy())
+                        ddpg_dist = ddpg_distance_metric(perturbed_actions.cpu().numpy(), unperturbed_actions.cpu().numpy())
                         param_noise.adapt(ddpg_dist)
 
-                    # raise
                     _ = self.model_v.update_parameters(w_bayes=preference_wb, batch_size=args.batch_size)
-                    # raise
                     self.train_steps += 1
 
         obj_np = np.array(obj_list)

@@ -1,6 +1,6 @@
 import torch
 from torch.optim import Adam
-from torch import Tensor
+from torch.autograd import Variable
 import torch.nn.functional as F
 from network import Critic, Actor
 import numpy as np
@@ -25,24 +25,14 @@ def normalize(x, stats, device):
 
 
 class DDPG:
-    def __init__(self, 
-                 gamma, 
-                 tau, 
-                 hidden_size, 
-                 num_inputs, 
-                 action_space, 
-                 reward_space, 
-                 train_mode, 
-                 replay_size, 
-                 beta, 
-                 normalize_obs=True, 
-                 normalize_returns=False, 
-                 critic_l2_reg=1e-2,
-                 device='cuda'):
-        self.device = device if isinstance(device, torch.device) else torch.device(device)
-        self.Tensor = torch.FloatTensor
+    def __init__(self, gamma, tau, hidden_size, num_inputs, action_space, reward_space, train_mode, replay_size, beta, normalize_obs=True, normalize_returns=False, critic_l2_reg=1e-2):
         if torch.cuda.is_available():
+            self.device = torch.device('cuda')
             torch.backends.cudnn.enabled = False
+            self.Tensor = torch.cuda.FloatTensor
+        else:
+            self.device = torch.device('cpu')
+            self.Tensor = torch.FloatTensor
 
         self.beta = beta
         self.train_mode = train_mode
@@ -94,8 +84,8 @@ class DDPG:
             self.critic.train()
 
     def select_action(self, state, preference, action_noise=None, param_noise=None, v_min=-1, v_max=1):
-        state = normalize(Tensor(state).to(self.device), self.obs_rms, self.device)
-        preference = Tensor(preference).to(self.device)
+        state = normalize(Variable(state).to(self.device), self.obs_rms, self.device)
+        preference = Variable(preference).to(self.device)
 
         if param_noise is not None:
             mu = self.actor_perturbed(state, preference)
@@ -103,35 +93,31 @@ class DDPG:
             mu = self.actor(state, preference)
         mu = mu.data
         if action_noise is not None:
-            # mu += self.Tensor(action_noise()).to(self.device)
-            mu = mu + self.Tensor(action_noise()).to(self.device)
+            mu += self.Tensor(action_noise()).to(self.device)
         mu = mu.clamp(v_min, v_max)
 
         return mu
 
     def update_model(self, state_batch, action_batch, reward_batch, preference_batch, mask_batch, next_state_batch, preference_bayes):
         # CRITIC LOSS
-        with torch.no_grad():
-            # FIXED
-            next_action_actor_batch = self.actor_target(next_state_batch, preference_batch)
-            next_state_action_values = self.critic_target(next_state_batch, next_action_actor_batch, preference_batch)
-            expected_state_action_batch = reward_batch + (self.gamma * mask_batch * next_state_action_values)
+        next_action_actor_batch = self.actor_target(next_state_batch, preference_batch)
+        next_state_action_values = self.critic_target(next_state_batch, next_action_actor_batch, preference_batch)
+        expected_state_action_batch = reward_batch + self.gamma * mask_batch * next_state_action_values
 
-        # raise
         self.critic_optim.zero_grad()
         state_action_batch = self.critic(state_batch, action_batch, preference_batch)
-        w_state_action_value_batch = torch.bmm(state_action_batch.unsqueeze(1), preference_batch.unsqueeze(2)).squeeze(1)
+        w_state_action_value_batch = torch.bmm(state_action_batch.unsqueeze(1), preference_batch.unsqueeze(2)).squeeze(
+            1)
         w_expected_state_action_value_batch = torch.bmm(expected_state_action_batch.unsqueeze(1),
                                                         preference_batch.unsqueeze(2)).squeeze(1)
 
-        # raise
         value_loss1 = F.mse_loss(w_state_action_value_batch.view(-1), w_expected_state_action_value_batch.view(-1))
         value_loss2 = F.mse_loss(state_action_batch.view(-1), expected_state_action_batch.view(-1))
 
         value_loss = self.beta * value_loss1 + (1 - self.beta) * value_loss2
         value_loss.backward()
         self.critic_optim.step()
-        # raise
+
         # ACTOR LOSS
         self.actor_optim.zero_grad()
         action = self.actor(state_batch, preference_batch)
@@ -160,22 +146,17 @@ class DDPG:
         policy_loss = -policy_loss_sum - self.dual.exp() * (self.target_error - QP_norm2 ** 2)
         policy_loss_b = -policy_loss_sum_b - self.dual.exp() * (self.target_error - QP_norm2_b ** 2)
 
-        total_policy_loss = policy_loss.mean() + policy_loss_b.mean()
-        total_policy_loss.backward() #retain_graph=True)
+        policy_loss = policy_loss.mean() + policy_loss_b.mean()
+        dual_loss_actor = (self.dual.exp() * (self.target_error - QP_norm2 ** 2)).mean() + (
+                self.dual.exp() * (self.target_error - QP_norm2_b ** 2)).mean()
+        policy_loss.backward(retain_graph=True)
         self.actor_optim.step()
-        # raise
 
-        # DUAL LOSS
         self.dual_optim.zero_grad()
-        with torch.no_grad():
-            err1 = self.target_error - QP_norm2 ** 2
-            err2 = self.target_error - QP_norm2_b ** 2
-        dual_loss_actor = (self.dual.exp() * err1).mean() + (self.dual.exp() * err2).mean()
-        dual_loss_actor.backward()
+        dual_loss_actor.backward(retain_graph=True)
         self.dual_optim.step()
-        # raise
 
-        return pareto_f.detach().cpu().numpy()
+        return pareto_f.detach().numpy()
 
     def store_transition(self, state, preference, action, mask, next_state, reward):
         B = state.shape[0]
@@ -194,27 +175,19 @@ class DDPG:
         transitions = self.memory.sample(batch_size)
         batch = Transition(*zip(*transitions))
 
-        state_batch = normalize(Tensor(torch.stack(batch.state)).to(self.device), self.obs_rms, self.device)
-        action_batch = Tensor(torch.stack(batch.action)).to(self.device)
-        reward_batch = normalize(Tensor(torch.stack(batch.reward)).to(self.device), self.ret_rms, self.device)
-        preference_batch = Tensor(torch.stack(batch.preference)).to(self.device)
-        mask_batch = Tensor(torch.stack(batch.mask)).to(self.device).unsqueeze(1)
-        next_state_batch = normalize(Tensor(torch.stack(batch.next_state)).to(self.device), self.obs_rms, self.device)
+        state_batch = normalize(Variable(torch.stack(batch.state)).to(self.device), self.obs_rms, self.device)
+        action_batch = Variable(torch.stack(batch.action)).to(self.device)
+        reward_batch = normalize(Variable(torch.stack(batch.reward)).to(self.device), self.ret_rms, self.device)
+        preference_batch = Variable(torch.stack(batch.preference)).to(self.device)
+        mask_batch = Variable(torch.stack(batch.mask)).to(self.device).unsqueeze(1)
+        next_state_batch = normalize(Variable(torch.stack(batch.next_state)).to(self.device), self.obs_rms, self.device)
 
-        # raise
         if self.normalize_returns:
             reward_batch = torch.clamp(reward_batch, -self.cliprew, self.cliprew)
 
-        # raise
-        pareto_f = self.update_model(state_batch, 
-                                    action_batch, 
-                                    reward_batch, 
-                                    preference_batch,
-                                    mask_batch, 
-                                    next_state_batch, 
-                                    preference_bayes)
+        pareto_f = self.update_model(state_batch, action_batch, reward_batch, preference_batch,
+                                                                        mask_batch, next_state_batch, preference_bayes)
 
-        # raise
         self.soft_update()
 
         return pareto_f
@@ -231,4 +204,4 @@ class DDPG:
             if 'ln' in name:
                 pass
             param = params[name]
-            param = param + torch.randn(param.shape).to(self.device) * param_noise.current_stddev
+            param += torch.randn(param.shape).to(self.device) * param_noise.current_stddev

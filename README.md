@@ -1,6 +1,15 @@
 # PRC-CMORL
 This repository is the implementation of our research "**[Personalized Robotic Control via Constrained Multi-Objective Reinforcement Learning](https://www.researchgate.net/publication/375254025_Personalized_robotic_control_via_constrained_multi-objective_reinforcement_learning)**".
 
+## Update:
+[original repo](https://github.com/TMIS-Turbo/PRC-CMORL)
+
+New Env:
+- [x] ubuntu16.04   -> ubuntu20.04+
+- [x] torch==1.3.1  -> pytorch2+
+- [x] mujoco-py     -> mujoco-py3+
+- [ ] gym0.15.4     -> gymnasium 
+
 ## Introduction
 ### Diagram of the Proposed CMORL Framework for Personalized Robotic Control
 <img src="figures/framework.jpg" alt="ENV" width="500" height="300">
